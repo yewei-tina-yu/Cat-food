@@ -1,0 +1,283 @@
+---
+title: "Ampliseq"
+author: "Tina"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(tidyverse)
+library(tools)
+library(devtools)
+install_github("jokergoo/ComplexHeatmap")
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("ComplexHeatmap") 
+library(ComplexHeatmap)
+library(circlize)
+library(purrr)
+library(grateful)
+library(grid)
+library(Polychrome)
+```
+
+## Table
+
+```{r 1}
+run3 <- read.csv("filtered_run3.csv")
+run1n2 <- read.csv("filtered_run1_2.csv")
+
+file <- bind_rows(run3, run1n2)
+
+write.csv(file, "merged_Ampliseq.csv")
+
+file_long <- file %>%
+  gather(key = "gene.family", value = "value", -Row.Labels)
+
+ref <- read.csv("AMR_annotations.csv")
+
+matched_dataset <- left_join(file_long, ref, by = c("gene.family" = "Gene"))
+
+matched_dataset$antibiotic_category <- paste(matched_dataset$Class, matched_dataset$Subclass, sep = "_")
+
+class <- read.csv("Ampliseq_with_class.csv")
+
+result <- class %>%
+  filter(value > 0) %>%
+  group_by(Row.Labels, Class, Subclass) %>%
+  summarise(count = n())
+
+result <- read.csv("result.csv") %>%
+  na.omit()
+
+df1_spread <- result %>%
+  spread(key = antibiotic_category, value = count)
+
+df2 <- read.csv("final_table.csv")
+
+final_df <- left_join(df2, df1_spread, by = "Row.Labels") %>%
+  select(where(~ !all(is.na(.)))) %>%
+  mutate(across(-Row.Labels, ~ifelse(is.na(.), 0, ifelse(. > 0, 1, .))))
+
+write.csv(final_df, "final_df.csv")
+
+```
+
+## Basic heat map
+
+```{r 3}
+amp <- read.csv("final_df.csv")
+
+mat <- as.matrix(amp[, -1])
+
+rownames(mat) <- amp$Row.Labels
+
+antibiotic_classes <- c("aminoglycoside", "lincosamide", "macrolide",
+                        "quinolone", "beta.lactam", "glycopeptide",
+                        "tetracycline", "phenicol", "trimethoprim",
+                        "lincosamide/streptogramin",
+                        "antibacterial free fatty acid",
+                        "fosfomycin", "fusidic.acid", "nitromidazole",
+                        "phenicol/quinolone", "quaternary.ammonium",
+                        "streptothricin")
+
+Heatmap(mat, name = "AMR",
+        column_title = "AMR gene Class/Subclass",
+        row_title = "Sample ID",
+        row_order = sort(rownames(mat)),
+        column_order = sort(colnames(mat)),
+        column_split = colnames(mat))
+
+#changing colors on the heat map: col = my_palette, rect_gp = gpar(col = "white", lwd = 2), 
+
+```
+
+## Dividing into matrices
+
+```{r 4}
+set.seed(723451) # for reproducibility
+color <- createPalette(length(antibiotic_classes), c("#010101", "#ff0000"), M=1000)
+
+colors_list <- rainbow(length(antibiotic_classes))
+
+custom_legends <- list()
+
+for (i in 1:length(antibiotic_classes)) {
+  antibiotic_class <- antibiotic_classes[i]
+  matching_cols <- grep(antibiotic_class, colnames(mat))
+  
+  if (length(matching_cols) > 0) {  
+    sub_matrix <- mat[, matching_cols, drop = FALSE]
+    
+    # Remove any characters from the class name that are not valid in R variable names
+    var_name <- make.names(antibiotic_class, unique=TRUE)
+    
+    # Save the sub-matrix as a variable
+    assign(var_name, sub_matrix)
+    
+    # Retrieve the matrix stored in the variable
+    sub_matrix_to_plot <- get(var_name)
+    
+    # Sort the rownames and extract their initials
+    sorted_rownames <- sort(rownames(sub_matrix_to_plot))
+    initials <- sub("(^[A-Z]{1,2}).*", "\\1", sorted_rownames)
+    unique_initials <- unique(initials)
+    
+    # Define the color mapping for this specific heatmap
+    my_palette <- colorRamp2(c(0, 1), c("white", color[i]))
+    
+    # Create custom legend for value = 1
+    lgd <- Legend(at = 1, 
+                  labels = c(antibiotic_class),
+                  legend_gp = gpar(fill = color[i]))
+    custom_legends[[antibiotic_class]] <- lgd
+    
+    # Create the heatmap
+    hm <- Heatmap(sub_matrix_to_plot,
+                  name = antibiotic_class,
+                  col = my_palette,
+                  show_row_names = FALSE,
+                  row_order = sorted_rownames,
+                  column_order = sort(colnames(sub_matrix_to_plot)),
+                  row_split = factor(initials, levels = unique_initials),
+                  border = TRUE)
+    
+    # Assign the heatmap to a variable
+    heatmap_var_name <- paste0(var_name, "_heatmap")
+    assign(heatmap_var_name, hm)
+  }
+}
+
+heatmap_list = aminoglycoside_heatmap + beta.lactam_heatmap + fosfomycin_heatmap + glycopeptide_heatmap + lincosamide_heatmap + macrolide_heatmap + phenicol_heatmap + quinolone_heatmap + streptothricin_heatmap + tetracycline_heatmap + trimethoprim_heatmap + fusidic.acid_heatmap + quaternary.ammonium_heatmap
+
+png("final_ht.png", width = 2500, height = 2500, res = 200)
+draw(heatmap_list, 
+     show_heatmap_legend = FALSE, 
+     heatmap_legend_side = "right", 
+     column_title = "AMR gene Class/Subclass", 
+     annotation_legend_list = custom_legends)
+dev.off()
+
+```
+
+## Raw vs Conventional
+
+```{r 5}
+file <- read.csv("081023_master clean cat food data compiled.csv") %>%
+  select(Short.ID.without.zeros, Raw.or.Conventional) %>%
+  na.omit()
+
+rvc <- left_join(amp, file, by = c("Row.Labels" = "Short.ID.without.zeros"))
+
+binary_mat <- as.matrix(file[, -1])
+
+rownames(binary_mat) <- file$Short.ID.without.zeros
+
+conditional_addition <- function(mat, binary_mat){
+  # Ensure dimensions are compatible
+  if (nrow(mat) != nrow(binary_mat) || ncol(binary_mat) != 1) {
+    stop("Dimensions of matrices are incompatible.")
+  }
+  
+  # Create a copy of the original matrix
+  result_mat <- mat
+  
+  # Apply the conditional operation
+  for(i in 1:nrow(result_mat)){
+    
+    # If the corresponding value in binary_mat is 1
+    if(binary_mat[i, 1] == 1){
+      
+      # Only add 1 to positive values in that row of result_mat
+      result_mat[i, result_mat[i,] > 0] <- result_mat[i, result_mat[i,] > 0] + 1
+      
+    }
+    
+  }
+  
+  return(result_mat)
+}
+
+new_mat <- conditional_addition(mat, binary_mat)
+
+sorted_rownames <- sort(rownames(new_mat))
+initials <- sub("(^[A-Z]{1,2}).*", "\\1", sorted_rownames)
+unique_initials <- unique(initials)
+
+new_mat_sorted <- new_mat[match(sorted_rownames, rownames(new_mat)), ]
+
+sub_matrices <- list()
+
+for (i in 1:length(antibiotic_classes)) {
+  antibiotic_class <- antibiotic_classes[i]
+  matching_cols <- grep(antibiotic_class, colnames(new_mat_sorted))
+  
+  if (length(matching_cols) > 0) {  
+    sub_matrix <- new_mat_sorted[, matching_cols, drop = FALSE]
+    
+    # Use the antibiotic class as the list's key
+    sub_matrices[[antibiotic_class]] <- sub_matrix
+  }
+}
+
+breaks = c(0, 1, 2)
+colors = c("white", "#003F7D", "#FF8E00")
+
+color_mapping = colorRamp2(breaks, colors)
+
+for(antibiotic_class in names(sub_matrices)) {
+  sub_matrix_to_plot <- sub_matrices[[antibiotic_class]]
+  
+  # Adjust row ordering and splitting based on the sub-matrix
+  sorted_submatrix_rownames <- sort(rownames(sub_matrix_to_plot))
+  initials_submatrix <- sub("(^[A-Z]{1,2}).*", "\\1", sorted_submatrix_rownames)
+
+  ht_sub <- Heatmap(sub_matrix_to_plot, 
+                    name = "Raw vs Conventional",
+                    show_row_names = FALSE,
+                    col = color_mapping,
+                    row_order = sorted_submatrix_rownames,
+                    column_order = sort(colnames(sub_matrix_to_plot)),
+                    row_split = factor(initials_submatrix, levels = unique(initials_submatrix)),
+                    border = TRUE)
+  
+  # Create a valid R variable name for the heatmap based on the antibiotic class
+  var_name <- make.names(paste("ht", antibiotic_class), unique=TRUE)
+  
+  # Dynamically assign the heatmap to the created variable name
+  assign(var_name, ht_sub)
+}
+
+legend_labels = c("Conventional", "Raw")
+legend_colors = c("#003F7D", "#FF8E00")
+
+custom_legend <- Legend(at = c(1, 2), 
+                        labels = legend_labels, 
+                        legend_gp = gpar(fill = legend_colors),
+                        title = "Sample Type")
+
+ht_2 <- ht.aminoglycoside + ht.beta.lactam + ht.fosfomycin + ht.glycopeptide + ht.lincosamide + ht.macrolide + ht.phenicol + ht.quinolone + ht.streptothricin + ht.tetracycline + ht.trimethoprim + ht.fusidic.acid + ht.quaternary.ammonium
+
+png("ht_raw_or_conventional.png", width = 2500, height = 2500, res = 200)
+draw(ht_2, show_heatmap_legend = FALSE, 
+     heatmap_legend_side = "right", 
+     column_title = "AMR gene Class/Subclass", 
+     annotation_legend_list = custom_legend)
+dev.off()
+
+```
+
+## Citation
+
+```{r 6}
+print(citation("ComplexHeatmap"), bibtex=TRUE)
+packageVersion("ComplexHeatmap")
+
+cite_packages(out.dir = getwd())
+```
