@@ -1,9 +1,3 @@
----
-title: "cat food presentation"
-author: "Tina, Marie, Kelly"
-date: "2023-07-27"
-output: pdf_document
----
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
